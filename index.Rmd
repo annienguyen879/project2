@@ -50,89 +50,203 @@ class_diag <- function(score, truth, positive, cutoff=.5){
 
 ### Introduction 
 
-Paragraph or two introducing your datasets and variables, why they are interesting to you, etc. See instructions for more information
+Since the turn of the century, health care for women has improved around the world, leading to a 38% decline in global maternal mortality between 2000 and 2017. Despite immense strides on the public health front, in 2017, approximately 810 women died every day from preventable causes related to pregnancy, and according to the World Health Organization (WHO), "94% of all maternal deaths occur in low and lower middle-income countries." 
+
+In this project, we will be examining few of the socioeconomic factors that may play a role in reducing the maternal mortality ratio (MMR): percent of general government spending on healthcare; lifetime risk of maternal death in percent; and percent of births attended by skilled healthcare staff. The UN's Sustainable Development Goals (SDG) agenda hopes to reduce the global MMR average to less than 70 per 100,000 births and aims to have no country with a MMR above double the average. For simplicity, we will consider a country's MMR as 'reduced' when the value is below 140. 
+
+*The following datasets were found on gapminder.org. Each observation in the data represents a country, and values are recorded by years. In this project, we will focus on the following variables: `mmr`, `lifetime_risk`, `skilled_care`, `expend_perc`, and `reduced_mortality`. Value of `reduced_mortality` is 'True' if MMR is below 140.*
 
 ```{R}
 library(tidyverse)
-# read your datasets in here, e.g., with read_csv()
-
-# if your dataset needs tidying, do so here
-
-# any other code here
+skilled_care <- read_csv('births_attended_by_skilled_staff.csv')
+govt_expend <- read_csv('govt_expend_perc.csv')
+lifetime_risk <- read_csv('lifetime_risk_maternal_death_perc.csv')
+mmr <- read_csv('mmr_ihme.csv')
+govt_expend %>% pivot_longer(-1,names_to='year', values_to='expend_perc') -> govt_expend 
+lifetime_risk %>% pivot_longer(-1,names_to='year', values_to='lifetime_risk') -> lifetime_risk
+mmr %>% pivot_longer(-1,names_to='year', values_to='mmr') -> mmr
+skilled_care %>% pivot_longer(-1,names_to='year', values_to='skilled_care') -> skilled_care
+dat_mmr<-mmr %>% full_join(lifetime_risk, by= c('country','year')) %>% 
+  full_join(skilled_care, by= c('country','year')) %>% 
+  full_join(govt_expend,by= c('country','year'))  %>% 
+  filter_at(vars(lifetime_risk,skilled_care,expend_perc),any_vars(!is.na(.)))%>%
+  mutate(reduced_mortality=if_else(mmr<140,"True","False"))
+head(dat_mmr) 
 ```
 
 ### Cluster Analysis
 
+In the following cluster analysis, we will focus on four numeric variables: maternal mortality ratio (MMR), % of births attended by skilled heathcare staff, lifetime risk of maternal death, and % of government expenditure on healthcare. Rows that contain `NA` are omitted.
 ```{R}
 library(cluster)
-# clustering code here
-```
+clust_mmr<-dat_mmr%>%select(mmr,skilled_care,lifetime_risk,expend_perc) %>% na.omit()
+sil_width <- vector()
+for(i in 2:10){
+  kms <- kmeans(clust_mmr,centers=i)
+  sil <- silhouette(kms$cluster,dist(clust_mmr))
+  sil_width[i]<- mean(sil[,3])
+}
+ggplot()+geom_line(aes(x=1:10,y=sil_width))+scale_x_continuous(name="k",breaks=1:10)
+pam_mmr <- clust_mmr %>% pam(k=2)
+pam_mmr$silinfo$avg.width
 
-Discussion of clustering here
+clust_mmr %>% slice(pam_mmr$id.med)
+```
+The average silhouette width of 0.774 indicates a strong cluster structure for the four variables, and the two points that best represent the medoids are in the table above.
+```{R}
+library(GGally)
+clust_mmr %>% mutate(cluster=as.factor(pam_mmr$clustering)) %>% ggpairs(aes(color=cluster))
+```
+After visualizing the pairwise combinations of the four variables, the MMR variable appears to show the greatest difference between clusters, while percent of government expenditure appears to have the least difference between clusters. Accounting for all four variables, cluster 1 (pink) generally has higher maternal mortality ratio (MMR), less skilled medical care, greater lifetime risk of maternal mortality, and lower government spending on health care. Observations in this cluster represent countries where women have higher chances of dying from preventable causes related to childbirth and pregnancy. 
+
     
     
 ### Dimensionality Reduction with PCA
-
+In the following section, we will examine the Principle Component Analysis (PCA) for the same numeric variables as in the previous section.
 ```{R}
-# PCA code here
+pca_mmr <- princomp(clust_mmr, cor=T)
+pca_mmr$scores %>% cor(use = 'pair') %>% round(10)
+summary(pca_mmr,loadings = T)
 ```
 
-Discussions of PCA here. 
+```{R}
+pca_mmr$scores %>% as.data.frame() %>% mutate(PC1=pca_mmr$scores[,1],PC2=pca_mmr$scores[,2]) %>%
+  ggplot(aes(PC1, PC2)) + geom_point() +coord_fixed()
+library(factoextra)
+fviz_pca_biplot(pca_mmr)
+```
+
+From the above outputs, we have shown that all four variables are uncorrelated with each other. We will keep up to PC2, since the first two PCs explain 90.4% of the total variance. A high score in PCA1 indicates a high maternal mortality ratio and high lifetime risk of maternal mortality, while a high score in PCA2 especially indicates higher government spending on health care. From the biplot, we can also see that government expenditure on health care and skilled health care are negatively correlated with maternal mortality ratio and lifetime risk of maternal mortality.
 
 ###  Linear Classifier
-
+A linear regression is applied to classify the outcome (`reduced_mortality`) based on `mmr`, `lifetime_risk`, `skilled_care`, and `expend_perc`.
 ```{R}
-# linear classifier code here
+mmr1 <- dat_mmr %>% select(reduced_mortality,mmr:expend_perc) %>% na.omit()%>% mutate(reduced_mortality = ifelse(reduced_mortality=="True", 1, 0))
+
+linear_fit <- lm(reduced_mortality==1~.,data = mmr1)
+
+prob_reg<-predict(linear_fit,type = 'response')
+class_diag(prob_reg,mmr1$reduced_mortality,positive=1)
+table(truth=mmr1$reduced_mortality,predictions=prob_reg>.5)
+```
+The AUC is about 0.9991, which suggests a strong and reliable classifier. The generated confusion matrix shows that there are 59 false positives and indicates that, overall, the model classifies the dataset well. 
+```{R}
+k=10
+data<-sample_frac(mmr1) #randomly order rows
+folds <- rep(1:k, length.out=nrow(mmr1))
+
+diags<-NULL
+for(i in 1:k){
+  train<-data[folds!=i,] 
+  test<-data[folds==i,] 
+  truth<-test$reduced_mortality
+  fit <- lm(reduced_mortality~.,data = mmr1)
+  probs <-predict(fit,newdata=test,type = 'response')
+  diags<-rbind(diags,class_diag(probs, truth, positive=1)) }
+
+summarize_all(diags,mean)
 ```
 
-```{R}
-# cross-validation of linear classifier here
-```
-
-Discussion here
+10-fold cross-validation is performed on the same model, yielding an AUC value of approximately 0.999. Comparing the two AUC values, this model shows no overfitting and is a reliable classifier.
 
 ### Non-Parametric Classifier
-
+K-nearest Neighbors is now applied to classify the outcome (`reduced_mortality`) based on `mmr`, `lifetime_risk`, `skilled_care`, and `expend_perc`.
 ```{R}
 library(caret)
-# non-parametric classifier code here
-```
+fit <- knn3(reduced_mortality ~ . , data=mmr1)
+probs <- predict(fit, newdata=mmr1)[,2]
+class_diag(probs, mmr1$reduced_mortality, positive=1) 
+table(truth = mmr1$reduced_mortality, predictions = probs>.5)
 
+data.frame(probs, truth=mmr1$reduced_mortality)%>%ggplot(aes(probs,color=truth))+geom_density(aes(fill=as.factor(truth)))
+```
+The AUC is about 1, which suggests a very strong and reliable classifier, indicating that, overall, the model classifies the dataset very well. The density plot above shows that the model reliably classifies reduced mortality.
 ```{R}
-# cross-validation of np classifier here
+k = 10
+
+data <- sample_frac(mmr1)  #randomly order rows
+folds <- rep(1:k, length.out = nrow(data))  #create folds
+
+diags <- NULL
+
+i = 1
+for (i in 1:k) {
+    # training and test sets
+    train <- data[folds != i, ]
+    test <- data[folds == i, ]
+    truth <- test$reduced_mortality
+    
+    # train model
+    fit <- knn3(reduced_mortality ~ . , data=mmr1)  
+    
+    # test model
+    probs <- predict(fit, newdata = test)[, 2]  
+    
+    # performance metrics for each fold
+    diags <- rbind(diags, class_diag(probs, truth, positive = 1))
+}
+
+# average performance metrics across all folds
+summarize_all(diags, mean)
+
+
 ```
 
-Discussion
+10-fold cross-validation is performed on the KNN model, again yielding an AUC value of approximately 1. Since the two AUC values are comparable, the model shows no overfitting and is a reliable classifier. This means that the model can reliably classify countries that have sufficiently reduced maternal mortality ratios (defined by UN guidelines) based on MMR, lifetime risk of maternal mortality, % of births attended by skilled staff, and % of government expenditure on healthcare.
 
 
 ### Regression/Numeric Prediction
-
+A linear regression model is fitted to the dataset to predict the maternal mortality ratio from `reduced_mortality`, `lifetime_risk`, `skilled_care`, and `expend_perc`.
 ```{R}
-# regression model code here
+fit <- lm(mmr~., data = mmr1)
+yhat <- predict(fit)
+mean((mmr1$mmr-yhat)^2) #MSE
 ```
 
 ```{R}
-# cross-validation of regression model here
+k=10 #choose number of folds
+data<-mmr1[sample(nrow(mmr1)),] #randomly order rows
+folds<-cut(seq(1:nrow(mmr1)),breaks=k,labels=F) #create folds
+diags<-NULL
+for(i in 1:k){
+  train<-data[folds!=i,]
+  test<-data[folds==i,]
+  ## Fit linear regression model to training set
+  fit<-lm(mmr~., data = mmr1)
+  ## Get predictions/y-hats on test set (fold i)
+  yhat<-predict(fit,newdata=test)
+  ## Compute prediction error (MSE) for fold i
+  diags<-mean((mmr1$mmr-yhat)^2)}
+mean(diags)
+
 ```
 
-Discussion
+When fitting the model to the dataset, the mean squared error (MSE) is about 1850.003. Because the MSE generated in cross-validation is significantly higher than the previous value, this indicates overfitting and shows that the model would not perform well in predicting maternal mortality ratios.
 
 ### Python 
 
 ```{R}
 library(reticulate)
+use_python("/usr/bin/python3")
+#py_install('matplotlib')
+plot <- import("matplotlib")
+plot$use("Agg", force = TRUE)
 ```
 
 ```{python}
-# python code here
+import matplotlib.pyplot as plt
+import numpy as np
+
+x=r.mmr1['expend_perc']
+y=r.mmr1['mmr']
+plt.scatter(x,y)
+plt.xlabel("% govt expend. on health care")
+plt.ylabel("maternal mortality ratio out of 100,000")
+plt.title("Govt. Spending on Healthcare vs. Maternal Mortality")
 ```
 
-Discussion
+The scatterplot above visualizes the relationship between maternal mortality ratios and percent of government expenditure on health care. The two variables have a negative correlation, suggesting that increased proportional spending on healthcare may play an important role in reducing maternal mortality.
 
 ### Concluding Remarks
 
-Include concluding remarks here, if any
-
-
-
-
+In this project, we have examined a few socioeconomic factors that play a role in reducing the maternal mortality ratio (MMR). A number of analyses were performed to assess the relationship among the variables as well as to classify and make predictions. From these results, we see that access to skilled health professionals, government investment in healthcare, and a lower lifetime risk of maternal mortality influence mortality ratios. If countries persist in working to invest in wider and more equitable access to pregnancy-related care, we will be able to continue to reduce the number of women who die from preventable causes related to pregnancy and childbirth.

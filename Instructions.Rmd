@@ -132,7 +132,7 @@ Again, you can use data from anywhere you want (see bottom for resources)! If yo
 cd ~/project2 #cd to your project2 directory
 git add .
 git commit -m "message"
-git remote set-url origin https://github.com/YOUR_USERNAME/project1.git
+git remote set-url origin https://github.com/annienguyen879/project2.git
 git push origin main
 ```
 
